@@ -24,6 +24,7 @@
   const openApp = require('../utils/openApp')
   const config = require('../config/followerConfig')
   const anti = require('../utils/antiDetection')
+  const { livePersonAmountWidget } = require('../utils/widget')
 
   // ============================================================
   // 入口
@@ -43,9 +44,26 @@
     toastLog('页面加载中...')
     randomSleep(5000)
 
-    // 开始主循环
+    // 开始主循环（用 while 替代递归，防栈溢出）
     toastLog('开始刷直播间...')
-    mainLoop()
+    while (!hitLimits()) {
+      try {
+        if (isInLiveRoom()) {
+          toastLog('发现直播间，进入')
+          doLiveRoomFollow()
+          if (hitLimits()) break
+        } else {
+          // 不在直播间 → 滑动找直播间（用单独变量控制时长，不用 randomSleep 双参）
+          sleep(rand(2000, 4000))
+          randomSwipe()
+          sleep(rand(2000, 4000))
+        }
+      } catch (e) {
+        log('主循环异常: ' + e)
+        sleep(3000)
+      }
+    }
+    toastLog('脚本执行完毕，已到达关注上限或任务结束')
   }
 
   // ============================================================
@@ -66,28 +84,6 @@
   // ============================================================
   let sessionCount = 0 // 本次执行已关注人数
 
-  function mainLoop() {
-    try {
-      // 检查上限
-      if (hitLimits()) return
-
-      if (isInLiveRoom()) {
-        toastLog('发现直播间，进入')
-        doLiveRoomFollow()
-      } else {
-        // 不在直播间 → 滑动找直播间
-        randomSleep(2000, 4000)
-        randomSwipe()
-        randomSleep(2000, 4000)
-        mainLoop()
-      }
-    } catch (e) {
-      log('主循环异常: ' + e)
-      randomSleep(3000)
-      mainLoop()
-    }
-  }
-
   /** 检查是否达到关注上限 */
   function hitLimits() {
     if (sessionCount >= config.sessionFollowLimit()) {
@@ -103,10 +99,9 @@
 
   /** 是否在直播间 */
   function isInLiveRoom() {
-    // 多种判断方式，任一成立即认为在直播间
     return desc('点击进入直播间按钮').exists() ||
            text('更多直播').exists() ||
-           id('com.ss.android.ugc.aweme:id/p25').exists()
+           id(livePersonAmountWidget).exists()
   }
 
   // ============================================================
@@ -116,17 +111,17 @@
     // 1. 点进直播间（如果在推荐流上还没进去）
     if (!text('更多直播').exists()) {
       clickContent('点击进入直播间按钮', 'desc')
-      // 等直播间加载
+      // 等直播间加载（最多等 15s）
       for (let i = 0; i < 15; i++) {
-        if (text('更多直播').exists() || id('com.ss.android.ugc.aweme:id/p25').exists()) break
+        if (text('更多直播').exists() || id(livePersonAmountWidget).exists()) break
         sleep(1000)
       }
     }
 
     // 确认是否成功进入
-    if (!text('更多直播').exists() && !id('com.ss.android.ugc.aweme:id/p25').exists()) {
+    if (!text('更多直播').exists() && !id(livePersonAmountWidget).exists()) {
       toastLog('进入直播间失败，跳过')
-      nextLiveRoom()
+      swipeToNext()
       return
     }
     toastLog('已进入直播间')
@@ -134,7 +129,7 @@
     // 2. 打开在线观众列表
     if (!openViewerList()) {
       toastLog('打不开观众列表，切下一个')
-      nextLiveRoom()
+      swipeToNext()
       return
     }
 
@@ -148,8 +143,7 @@
     sessionCount += followed
 
     // 5. 滑到下一个直播间
-    nextLiveRoom()
-    mainLoop()
+    swipeToNext()
   }
 
   // ============================================================
@@ -163,28 +157,25 @@
     if (viewerTexts.exists()) {
       toastLog('点击人数区域')
       try {
-        // 取最后一个（通常是人数显示的主要控件）
         const els = viewerTexts.find()
         if (els.length > 0) {
-          const btn = els[els.length - 1]
-          anti.randomTap(btn)
+          anti.randomTap(els[els.length - 1])
           sleep(2000)
           if (isViewerListOpen()) return true
         }
-      } catch (e) { log('点击人数区域失败') }
+      } catch (e) { log('点击人数区域失败: ' + e) }
     }
 
     // 策略2：点击直播间人数 id
     try {
-      const personId = id('com.ss.android.ugc.aweme:id/p25')
-      if (personId.exists()) {
-        anti.randomTap(personId.findOnce())
+      if (id(livePersonAmountWidget).exists()) {
+        anti.randomTap(id(livePersonAmountWidget).findOnce())
         sleep(2000)
         if (isViewerListOpen()) return true
       }
-    } catch (e) { log('id方法失败') }
+    } catch (e) { log('id方法失败: ' + e) }
 
-    // 策略3：直播间底部中间区域坐标点击（观众入口通常在底部中间偏右）
+    // 策略3：直播间底部中间区域坐标点击
     toastLog('尝试坐标点击观众入口')
     const w = device.width, h = device.height
     const points = [
@@ -208,7 +199,6 @@
 
   /** 判断观众列表是否已打开 */
   function isViewerListOpen() {
-    // 观众列表打开后通常会出现 RecyclerView + 有关闭按钮
     return className('androidx.recyclerview.widget.RecyclerView').exists() ||
            text('在线观众').exists() || text('观众列表').exists() ||
            desc('关闭').visibleToUser().exists()
@@ -221,16 +211,26 @@
     const maxScrolls = config.maxScrollsPerRoom()
     let followed = 0
     let scrollCount = 0
+    let emptyCount = 0 // 连续空滚动计数
 
     toastLog('开始处理观众列表')
 
     while (scrollCount < maxScrolls) {
-      // 检查上限
       if (hitLimits()) break
 
       // 找到当前可见的所有"关注"按钮
       const followBtns = findFollowButtonsInList()
-      log('找到 ' + followBtns.length + ' 个关注按钮')
+
+      // 如果没有更多关注按钮，提前结束
+      if (followBtns.length === 0) {
+        emptyCount++
+        if (emptyCount >= 2) {
+          toastLog('没有更多可关注的用户')
+          break
+        }
+      } else {
+        emptyCount = 0
+      }
 
       // 遍历关注按钮
       let processedThisScroll = false
@@ -239,15 +239,13 @@
         if (!btn || !btn.visibleToUser()) continue
 
         try {
-          // 检查性别（如果启用了男性筛选）
+          // 检查性别
           if (config.followMaleOnly() && !isMaleNearButton(btn)) {
-            log('跳过：非男性或无法判断')
             continue
           }
 
           // 概率关注
           if (!anti.chance(config.followProbability())) {
-            log('概率跳过')
             continue
           }
 
@@ -262,17 +260,23 @@
           // 随机延时 3-8 秒
           anti.randomDelay(config.followMinDelay(), config.followMaxDelay())
         } catch (e) {
-          log('关注按钮点击异常: ' + e)
-          continue
+          log('关注异常: ' + e)
         }
       }
 
-      // 如果当前页没有新关注，可能需要滚动
-      if (!processedThisScroll) {
-        toastLog('滚动列表...')
-        anti.scrollDown()
-        sleep(config.scrollDelayMin() + random(0, config.scrollDelayMax() - config.scrollDelayMin()))
+      // 如果当前页有操作或按钮不多，尝试滚动
+      if (followBtns.length <= 1) {
         scrollCount++
+        if (scrollCount < maxScrolls) {
+          toastLog('滚动列表 (' + scrollCount + '/' + maxScrolls + ')')
+          anti.scrollDown()
+        }
+      } else if (!processedThisScroll) {
+        // 有按钮但都没处理（概率跳过或非男性），滚一下试试
+        scrollCount++
+        if (scrollCount < maxScrolls) {
+          anti.scrollDown()
+        }
       }
     }
 
@@ -280,36 +284,30 @@
   }
 
   // ============================================================
-  // 查找观众列表中的"关注"按钮
+  // 查找关注按钮
   // ============================================================
   function findFollowButtonsInList() {
     const btns = []
 
     // 方法1（推荐）：className + desc 精确匹配
-    // 这是社区验证的最稳定方案
     try {
       const followEls = className('android.widget.Button').desc('关注').find()
       for (const el of followEls) {
-        if (el && el.visibleToUser()) {
-          // 确保这个按钮在观众列表面板内
-          if (isInsideViewerList(el)) {
-            btns.push(el)
-          }
+        if (el && el.visibleToUser() && isInsideViewerList(el)) {
+          btns.push(el)
         }
       }
       if (btns.length > 0) return btns
     } catch (e) { log('方法1异常: ' + e) }
 
-    // 方法2：直接 text("关注") 查找（备选）
+    // 方法2：text("关注") 查找（备选）
     try {
       const textEls = text('关注').find()
       for (const el of textEls) {
         if (el && el.visibleToUser() && isInsideViewerList(el)) {
-          // 优先用可点击的父容器
           try {
             const parent = el.parent()
-            if (parent && parent.clickable()) btns.push(parent)
-            else btns.push(el)
+            btns.push(parent && parent.clickable() ? parent : el)
           } catch (e) {
             btns.push(el)
           }
@@ -324,19 +322,17 @@
   /** 判断控件是否在观众列表面板内 */
   function isInsideViewerList(el) {
     try {
-      // 观众列表通常以 RecyclerView 为容器
       if (className('androidx.recyclerview.widget.RecyclerView').exists()) {
         const listView = className('androidx.recyclerview.widget.RecyclerView').findOnce()
         if (listView) {
-          const listBounds = listView.bounds()
-          const elBounds = el.bounds()
-          if (listBounds && elBounds) {
-            return elBounds.top >= listBounds.top &&
-                   elBounds.bottom <= listBounds.bottom
+          const lb = listView.bounds()
+          const eb = el.bounds()
+          if (lb && eb) {
+            return eb.top >= lb.top && eb.bottom <= lb.bottom
           }
         }
       }
-    } catch (e) { /* 无法判断时假定在列表内 */ }
+    } catch (e) { /* 无法判断时默认在列表内 */ }
     return true
   }
 
@@ -348,40 +344,34 @@
       const btnBounds = btn.bounds()
       if (!btnBounds) return true
 
-      // 在按钮附近区域扫描性别标识
-      // 抖音观众列表项中，性别通常在关注按钮左侧的头像/昵称区域
       const scanLeft = btnBounds.left - 300
       const scanRight = btnBounds.right
       const scanTop = btnBounds.top - 20
       const scanBottom = btnBounds.bottom + 20
 
-      // 在这个区域内查找"男"或"女"文字
+      // 在按钮附近找"男"或"女"文字
       const maleEl = text('男').findOnce(100)
       const femaleEl = text('女').findOnce(100)
 
       if (maleEl) {
         try {
-          const mBounds = maleEl.bounds()
-          if (mBounds && mBounds.left >= scanLeft && mBounds.right <= scanRight &&
-              mBounds.top >= scanTop && mBounds.bottom <= scanBottom) {
-            return true
-          }
+          const mb = maleEl.bounds()
+          if (mb && mb.left >= scanLeft && mb.right <= scanRight &&
+              mb.top >= scanTop && mb.bottom <= scanBottom) return true
         } catch (e) { /* ignore */ }
       }
 
       if (femaleEl) {
         try {
-          const fBounds = femaleEl.bounds()
-          if (fBounds && fBounds.left >= scanLeft && fBounds.right <= scanRight &&
-              fBounds.top >= scanTop && fBounds.bottom <= scanBottom) {
-            return false
-          }
+          const fb = femaleEl.bounds()
+          if (fb && fb.left >= scanLeft && fb.right <= scanRight &&
+              fb.top >= scanTop && fb.bottom <= scanBottom) return false
         } catch (e) { /* ignore */ }
       }
 
-      // 扫描按钮的父级和兄弟级控件
+      // 搜索按钮的父级和兄弟级控件文字
       try {
-        const texts = collectAllTextNear(btn)
+        const texts = collectNearText(btn)
         for (const t of texts) {
           if (t === '男') return true
           if (t === '女') return false
@@ -389,12 +379,10 @@
       } catch (e) { /* ignore */ }
     } catch (e) { /* ignore */ }
 
-    // 无法判断时默认为男性（宁可不漏）
-    return true
+    return true // 无法判断时默认为男性
   }
 
-  /** 收集按钮附近的文字 */
-  function collectAllTextNear(btn) {
+  function collectNearText(btn) {
     const texts = []
     try {
       let parent = btn.parent()
@@ -427,15 +415,17 @@
         back()
       }
       sleep(1000)
-      // 没关掉就再按一次返回
-      if (isViewerListOpen()) back()
+      if (isViewerListOpen()) {
+        back()
+        sleep(500)
+      }
     } catch (e) {
       try { back() } catch (e2) { /* ignore */ }
     }
     sleep(500)
   }
 
-  function nextLiveRoom() {
+  function swipeToNext() {
     toastLog('切换到下一个直播间')
     sleep(1500)
     liveSwipe()
@@ -445,7 +435,7 @@
   // ============================================================
   // 工具
   // ============================================================
-  function random(min, max) {
+  function rand(min, max) {
     return Math.round(Math.random() * (max - min) + min)
   }
 
