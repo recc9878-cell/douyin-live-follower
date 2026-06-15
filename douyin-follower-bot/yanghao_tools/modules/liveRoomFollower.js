@@ -152,19 +152,24 @@
   function openViewerList() {
     toastLog('打开观众列表...')
 
-    // 策略1：点击"xx人正在看"这类文本
-    const viewerTexts = textMatches(/[0-9.]+万?人?正在看/)
-    if (viewerTexts.exists()) {
-      toastLog('点击人数区域')
-      try {
-        const els = viewerTexts.find()
-        if (els.length > 0) {
-          anti.randomTap(els[els.length - 1])
+    // 策略1（推荐）：点击"人在看"文字的父容器
+    // 社区经验：textContains("人在看") 找到人数文字，它的父容器是可点击的观众入口
+    try {
+      const viewerText = textContains('人在看').findOne(2000)
+      if (viewerText) {
+        const parent = viewerText.parent()
+        if (parent) {
+          toastLog('点击人数区域')
+          anti.randomTap(parent)
           sleep(2000)
           if (isViewerListOpen()) return true
         }
-      } catch (e) { log('点击人数区域失败: ' + e) }
-    }
+        // 父容器不行就点文字本身
+        anti.randomTap(viewerText)
+        sleep(2000)
+        if (isViewerListOpen()) return true
+      }
+    } catch (e) { log('人数区域点击失败: ' + e) }
 
     // 策略2：点击直播间人数 id
     try {
@@ -289,7 +294,19 @@
   function findFollowButtonsInList() {
     const btns = []
 
-    // 方法1（推荐）：className + desc 精确匹配
+    // 方法1（最推荐）：desc("关注") 直接匹配
+    // 社区验证：desc 属性比 className+desc 组合更稳定，抖音版本更新时 desc 很少变
+    try {
+      const els = desc('关注').find()
+      for (const el of els) {
+        if (el && el.visibleToUser() && isInsideViewerList(el)) {
+          btns.push(el)
+        }
+      }
+      if (btns.length > 0) return btns
+    } catch (e) { log('方法1异常: ' + e) }
+
+    // 方法2：className + desc 组合匹配
     try {
       const followEls = className('android.widget.Button').desc('关注').find()
       for (const el of followEls) {
@@ -298,9 +315,9 @@
         }
       }
       if (btns.length > 0) return btns
-    } catch (e) { log('方法1异常: ' + e) }
+    } catch (e) { log('方法2异常: ' + e) }
 
-    // 方法2：text("关注") 查找（备选）
+    // 方法3：text("关注") 查找（备选）
     try {
       const textEls = text('关注').find()
       for (const el of textEls) {
@@ -313,8 +330,8 @@
           }
         }
       }
-      if (btns.length > 0) return btns
-    } catch (e) { log('方法2异常: ' + e) }
+      return btns
+    } catch (e) { log('方法3异常: ' + e) }
 
     return btns
   }
