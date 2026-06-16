@@ -8,7 +8,7 @@ const storageNewConfig = require('./config/storageNew');
 const storageKsYanghaoConfig = require('./config/storageKsYanghao');
 const followerConfig = require('./config/followerConfig');
 const Utils = require('./utils/util')
-const dayjs = require('dayjs')
+// dayjs 是 AutoJs6 全局内置，不需要 require
 const fillAppVersion = '30.1.0' // 适配的版本
 const fillKsAppVersion = '10.9.21.28058' // 适配的版本
 let isFillVer = true // 是否适配版本

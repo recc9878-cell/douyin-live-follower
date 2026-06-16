@@ -70,7 +70,7 @@
   // 每日重置
   // ============================================================
   function checkDailyReset() {
-    const dayjs = require('dayjs')
+    // dayjs 是 AutoJs6 全局内置，直接使用
     const today = dayjs(new Date().getTime()).format('YYYY-MM-DD')
     const lastRun = dayjs(config.lastRunTime()).format('YYYY-MM-DD')
     if (today !== lastRun) {
