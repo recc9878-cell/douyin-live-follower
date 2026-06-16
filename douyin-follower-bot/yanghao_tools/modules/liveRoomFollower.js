@@ -217,75 +217,111 @@
   // ============================================================
   // 处理观众列表（核心循环）
   // ============================================================
+
+  /**
+   * 真正的抖音操作流程：
+   *
+   * 观众列表 → 点头像 → 弹窗显示性别 → 点关注 → 关弹窗
+   *
+   * 不直接在列表里找关注按钮，因为关注按钮在头像的弹窗里。
+   */
   function processViewerList() {
     const maxScrolls = config.maxScrollsPerRoom()
     let followed = 0
     let scrollCount = 0
-    let emptyCount = 0 // 连续空滚动计数
+    let emptyCount = 0
 
-    toastLog('开始处理观众列表')
+    toastLog('开始处理观众列表 — 点头像→看性别→关注')
 
     while (scrollCount < maxScrolls) {
       if (hitLimits()) break
 
-      // 找到当前可见的所有"关注"按钮
-      const followBtns = findFollowButtonsInList()
+      // 获取当前可见的观众头像
+      const avatarItems = getViewerAvatarItems()
+      log('找到 ' + avatarItems.length + ' 个头像')
 
-      // 如果没有更多关注按钮，提前结束
-      if (followBtns.length === 0) {
+      if (avatarItems.length === 0) {
         emptyCount++
         if (emptyCount >= 2) {
-          toastLog('没有更多可关注的用户')
+          toastLog('没有更多观众')
           break
         }
       } else {
         emptyCount = 0
       }
 
-      // 遍历关注按钮
-      let processedThisScroll = false
-      for (const btn of followBtns) {
+      // 遍历每个观众 → 点头像 → 弹窗判断性别 → 关注
+      let processed = false
+      for (const avatar of avatarItems) {
         if (hitLimits()) break
-        if (!btn || !btn.visibleToUser()) continue
+        if (!avatar || !avatar.visibleToUser()) continue
 
         try {
-          // 检查性别
-          if (config.followMaleOnly() && !isMaleNearButton(btn)) {
+          // 点头像 → 弹出个人资料
+          toastLog('点击观众头像')
+          anti.randomTap(avatar, config.tapOffsetMin(), config.tapOffsetMax())
+
+          // 等弹窗出现
+          const popupOpened = waitForProfilePopup()
+          if (!popupOpened) {
+            log('弹窗未出现，下一个')
             continue
+          }
+
+          // 查看性别
+          if (config.followMaleOnly()) {
+            if (!isMaleInPopup()) {
+              toastLog('非男性，跳过')
+              closeProfilePopup()
+              anti.randomDelay(1500, 3000)
+              continue
+            }
           }
 
           // 概率关注
           if (!anti.chance(config.followProbability())) {
+            toastLog('概率跳过')
+            closeProfilePopup()
+            anti.randomDelay(1500, 3000)
             continue
           }
 
-          // 点关注
-          anti.randomTap(btn, config.tapOffsetMin(), config.tapOffsetMax())
-          followed++
-          config.incrementDayFollowed()
-          processedThisScroll = true
+          // 在弹窗中点关注
+          const followedOk = clickFollowInPopup()
+          if (followedOk) {
+            followed++
+            config.incrementDayFollowed()
+            processed = true
+            toastLog('已关注 ✓ (' + config.dayFollowedAmount() + '/' + config.dayFollowLimit() + ')')
+          } else {
+            toastLog('未找到关注按钮')
+          }
 
-          toastLog('已关注 ✓ (' + config.dayFollowedAmount() + '/' + config.dayFollowLimit() + ')')
+          // 关弹窗
+          closeProfilePopup()
 
-          // 随机延时 3-8 秒
+          // 随机延时
           anti.randomDelay(config.followMinDelay(), config.followMaxDelay())
         } catch (e) {
-          log('关注异常: ' + e)
+          log('处理单个观众异常: ' + e)
+          // 出错时尝试关弹窗，继续下一个
+          try { closeProfilePopup() } catch (e2) { /* ignore */ }
+          anti.randomDelay(1500, 3000)
         }
       }
 
-      // 如果当前页有操作或按钮不多，尝试滚动
-      if (followBtns.length <= 1) {
+      // 滚动列表
+      if (!processed) {
         scrollCount++
         if (scrollCount < maxScrolls) {
           toastLog('滚动列表 (' + scrollCount + '/' + maxScrolls + ')')
           anti.scrollDown()
         }
-      } else if (!processedThisScroll) {
-        // 有按钮但都没处理（概率跳过或非男性），滚一下试试
-        scrollCount++
+      } else {
+        // 有操作成功，但列表可能还有更多，也可以考虑滚动
         if (scrollCount < maxScrolls) {
           anti.scrollDown()
+          scrollCount++
         }
       }
     }
@@ -294,231 +330,320 @@
   }
 
   // ============================================================
-  // 性别筛选（列表级）
+  // 观众头像获取
   // ============================================================
 
   /**
-   * 在观众列表中找到并点击"筛选"按钮，选择男性
+   * 获取观众列表中当前可见的所有头像控件
    *
-   * 抖音观众列表顶部通常有"全部"、"男"、"女"等筛选标签，
-   * 或者有"筛选"按钮。如果有，直接选"男"让列表只显示男性用户。
-   * 如果没有筛选功能，fallback 到 per-user 判断。
+   * 观众列表是一个 RecyclerView，每一项包含头像、昵称等。
+   * 头像通常是 ImageView，并且是列表项中可点击的圆形控件。
    */
-  function filterMaleUsers() {
-    toastLog('尝试筛选男性用户...')
+  function getViewerAvatarItems() {
+    const items = []
 
-    // 策略1：点击"全部"标签区域 → 展开筛选选项 → 选"男"
-    // 观众列表顶部通常有"全部/男/女"三个 tab
-    try {
-      // 先看看有没有"全部"标签（有说明是 tab 筛选模式）
-      if (text('全部').visibleToUser().exists()) {
-        log('发现筛选标签，尝试选择"男"')
-        const maleTab = text('男').findOnce(1000)
-        if (maleTab && maleTab.visibleToUser()) {
-          anti.randomTap(maleTab)
-          sleep(1500)
-          toastLog('已筛选：只看男性')
-          return
-        }
-        // "男"不可见 → 可能被折叠了，先点"全部"展开
-        const allTab = text('全部').findOnce(1000)
-        if (allTab && allTab.visibleToUser()) {
-          anti.randomTap(allTab)
-          sleep(1000)
-          // 展开后再找"男"
-          const maleTab2 = text('男').findOnce(1000)
-          if (maleTab2 && maleTab2.visibleToUser()) {
-            anti.randomTap(maleTab2)
-            sleep(1500)
-            toastLog('已筛选：只看男性')
-            return
-          }
-        }
-      }
-    } catch (e) { log('筛选标签模式失败: ' + e) }
-
-    // 策略2：找"筛选"或"排序"按钮
-    try {
-      const filterKeywords = ['筛选', '排序', '全部']
-      for (const kw of filterKeywords) {
-        if (text(kw).visibleToUser().exists()) {
-          const filterBtn = text(kw).findOnce(1000)
-          if (filterBtn) {
-            anti.randomTap(filterBtn)
-            sleep(1500)
-
-            // 在弹出的面板中选"男"
-            const maleOpt = text('男').findOnce(1500)
-            if (maleOpt && maleOpt.visibleToUser()) {
-              anti.randomTap(maleOpt)
-              sleep(500)
-
-              // 点确定/完成
-              if (text('确定').visibleToUser().exists()) {
-                clickContent('确定', 'text')
-              } else if (desc('完成').visibleToUser().exists()) {
-                clickContent('完成', 'desc')
-              }
-
-              sleep(1500)
-              toastLog('已筛选：只看男性')
-              return
-            }
-          }
-        }
-      }
-    } catch (e) { log('筛选按钮模式失败: ' + e) }
-
-    // 策略3：找 desc 中的筛选相关按钮
-    try {
-      if (desc('筛选').visibleToUser().exists()) {
-        clickContent('筛选', 'desc')
-        sleep(1500)
-        const maleOpt = text('男').findOnce(1500)
-        if (maleOpt && maleOpt.visibleToUser()) {
-          anti.randomTap(maleOpt)
-          sleep(500)
-          if (text('确定').exists()) clickContent('确定', 'text')
-          sleep(1500)
-          toastLog('已筛选：只看男性')
-          return
-        }
-      }
-    } catch (e) { log('desc筛选模式失败: ' + e) }
-
-    // 都没有筛选功能 → 后续 processViewerList 中会逐个判断性别
-    toastLog('列表无筛选功能，将在关注时逐个识别性别')
-  }
-
-  // ============================================================
-  // 查找关注按钮
-  // ============================================================
-  function findFollowButtonsInList() {
-    const btns = []
-
-    // 方法1（最推荐）：desc("关注") 直接匹配
-    // 社区验证：desc 属性比 className+desc 组合更稳定，抖音版本更新时 desc 很少变
-    try {
-      const els = desc('关注').find()
-      for (const el of els) {
-        if (el && el.visibleToUser() && isInsideViewerList(el)) {
-          btns.push(el)
-        }
-      }
-      if (btns.length > 0) return btns
-    } catch (e) { log('方法1异常: ' + e) }
-
-    // 方法2：className + desc 组合匹配
-    try {
-      const followEls = className('android.widget.Button').desc('关注').find()
-      for (const el of followEls) {
-        if (el && el.visibleToUser() && isInsideViewerList(el)) {
-          btns.push(el)
-        }
-      }
-      if (btns.length > 0) return btns
-    } catch (e) { log('方法2异常: ' + e) }
-
-    // 方法3：text("关注") 查找（备选）
-    try {
-      const textEls = text('关注').find()
-      for (const el of textEls) {
-        if (el && el.visibleToUser() && isInsideViewerList(el)) {
-          try {
-            const parent = el.parent()
-            btns.push(parent && parent.clickable() ? parent : el)
-          } catch (e) {
-            btns.push(el)
-          }
-        }
-      }
-      return btns
-    } catch (e) { log('方法3异常: ' + e) }
-
-    return btns
-  }
-
-  /** 判断控件是否在观众列表面板内 */
-  function isInsideViewerList(el) {
+    // 方法1：从 RecyclerView 中找 ImageView（头像）
     try {
       if (className('androidx.recyclerview.widget.RecyclerView').exists()) {
         const listView = className('androidx.recyclerview.widget.RecyclerView').findOnce()
         if (listView) {
-          const lb = listView.bounds()
-          const eb = el.bounds()
-          if (lb && eb) {
-            return eb.top >= lb.top && eb.bottom <= lb.bottom
-          }
-        }
-      }
-    } catch (e) { /* 无法判断时默认在列表内 */ }
-    return true
-  }
-
-  // ============================================================
-  // 性别判断（简化版）
-  // ============================================================
-  function isMaleNearButton(btn) {
-    try {
-      const btnBounds = btn.bounds()
-      if (!btnBounds) return true
-
-      const scanLeft = btnBounds.left - 300
-      const scanRight = btnBounds.right
-      const scanTop = btnBounds.top - 20
-      const scanBottom = btnBounds.bottom + 20
-
-      // 在按钮附近找"男"或"女"文字
-      const maleEl = text('男').findOnce(100)
-      const femaleEl = text('女').findOnce(100)
-
-      if (maleEl) {
-        try {
-          const mb = maleEl.bounds()
-          if (mb && mb.left >= scanLeft && mb.right <= scanRight &&
-              mb.top >= scanTop && mb.bottom <= scanBottom) return true
-        } catch (e) { /* ignore */ }
-      }
-
-      if (femaleEl) {
-        try {
-          const fb = femaleEl.bounds()
-          if (fb && fb.left >= scanLeft && fb.right <= scanRight &&
-              fb.top >= scanTop && fb.bottom <= scanBottom) return false
-        } catch (e) { /* ignore */ }
-      }
-
-      // 搜索按钮的父级和兄弟级控件文字
-      try {
-        const texts = collectNearText(btn)
-        for (const t of texts) {
-          if (t === '男') return true
-          if (t === '女') return false
-        }
-      } catch (e) { /* ignore */ }
-    } catch (e) { /* ignore */ }
-
-    return true // 无法判断时默认为男性
-  }
-
-  function collectNearText(btn) {
-    const texts = []
-    try {
-      let parent = btn.parent()
-      for (let i = 0; i < 3 && parent; i++) {
-        try {
-          const children = parent.children()
-          if (children) {
+          const children = listView.children()
+          if (children && children.length > 0) {
             for (const child of children) {
-              try { const t = child.text(); if (t) texts.push(t) } catch (e) { /* ignore */ }
-              try { const d = child.desc(); if (d) texts.push(d) } catch (e) { /* ignore */ }
+              if (child && child.visibleToUser()) {
+                // 用 ImageView 作为头像候选
+                const imageViews = child.find(className('android.widget.ImageView'))
+                if (imageViews && imageViews.length > 0) {
+                  // 第一个 ImageView 通常是头像
+                  items.push(imageViews[0])
+                } else {
+                  // 没有找到 ImageView → 用整个列表项
+                  items.push(child)
+                }
+              }
+            }
+            if (items.length > 0) {
+              log('从 RecyclerView 获取到 ' + items.length + ' 个头像')
+              return items
             }
           }
-        } catch (e) { /* ignore */ }
-        try { parent = parent.parent() } catch (e) { break }
+        }
+      }
+    } catch (e) { log('RecyclerView 获取失败: ' + e) }
+
+    // 方法2：直接找可见的 ImageView（限制在屏幕中下区域，排除顶部）
+    try {
+      // 观众列表在屏幕下半部分（直播间上半部分是视频）
+      const centerY = device.height * 0.5
+      const imageViews = className('android.widget.ImageView').find()
+      for (const iv of imageViews) {
+        try {
+          const b = iv.bounds()
+          if (b && b.top > centerY && iv.visibleToUser()) {
+            // 圆形头像通常宽高比接近 1:1
+            const ratio = Math.abs(b.right - b.left) / Math.max(Math.abs(b.bottom - b.top), 1)
+            if (ratio > 0.7 && ratio < 1.4) {
+              items.push(iv)
+            }
+          }
+        } catch (e2) { /* ignore */ }
+      }
+      if (items.length > 0) {
+        log('通过 ImageView 遍历获取到 ' + items.length + ' 个头像')
+        return items
+      }
+    } catch (e) { log('ImageView 遍历失败: ' + e) }
+
+    // 方法3：兜底 — 用所有可点击的控件列表项
+    try {
+      if (className('androidx.recyclerview.widget.RecyclerView').exists()) {
+        const listView = className('androidx.recyclerview.widget.RecyclerView').findOnce()
+        if (listView) {
+          const children = listView.children()
+          if (children) {
+            for (const child of children) {
+              if (child && child.visibleToUser()) {
+                items.push(child)
+              }
+            }
+          }
+        }
       }
     } catch (e) { /* ignore */ }
-    return texts
+
+    log('最终获取到 ' + items.length + ' 个观众项')
+    return items
+  }
+
+  // ============================================================
+  // 弹窗操作
+  // ============================================================
+
+  /**
+   * 等待个人资料弹窗出现
+   * 点击头像后，抖音会弹出一个覆盖层显示用户信息
+   */
+  function waitForProfilePopup() {
+    // 弹窗出现后，通常会有"关注"按钮、"私信"按钮等
+    for (let i = 0; i < 10; i++) {
+      if (isProfilePopupVisible()) {
+        log('个人资料弹窗已出现')
+        // 等弹窗完全加载
+        sleep(1000)
+        return true
+      }
+      sleep(500)
+    }
+    log('个人资料弹窗超时')
+    return false
+  }
+
+  /** 判断个人资料弹窗是否可见 */
+  function isProfilePopupVisible() {
+    return desc('关注').visibleToUser().exists() ||
+           desc('私信').visibleToUser().exists() ||
+           text('关注').visibleToUser().exists()
+  }
+
+  /**
+   * 在弹窗中判断性别
+   *
+   * 抖音的性别显示方式：
+   * 1. 文字直接显示：头像下方有"男"或"女"文字
+   * 2. 性别图标：一个带颜色的小图标（蓝色=男，粉色=女），通过 desc 或 className 判断
+   * 3. 不显示：有些用户没设性别
+   *
+   * @returns {boolean|null} true=男, false=女, null=未知（不显示）
+   */
+  function isMaleInPopup() {
+    // 方法1：直接找"男"或"女"文字
+    try {
+      if (text('男').visibleToUser().exists()) {
+        log('性别判断：男（文字匹配）')
+        return true
+      }
+      if (text('女').visibleToUser().exists()) {
+        log('性别判断：女（文字匹配）')
+        return false
+      }
+    } catch (e) { /* ignore */ }
+
+    // 方法2：找性别图标的 desc
+    // 有些版本用蓝色/粉色图标表示性别，desc 可能是"男"或"女"
+    try {
+      const genderIcons = className('android.widget.ImageView').descMatches(/男|女/).find()
+      if (genderIcons && genderIcons.length > 0) {
+        const desc = genderIcons[0].desc()
+        log('性别判断：' + desc + '（图标 desc）')
+        return desc === '男'
+      }
+    } catch (e) { /* ignore */ }
+
+    // 方法3：扫描弹窗范围内的所有文字
+    try {
+      const allText = className('android.widget.TextView').find()
+      for (const tv of allText) {
+        if (!tv.visibleToUser()) continue
+        try {
+          const t = tv.text()
+          if (t === '男') { log('性别判断：男（TextViews）'); return true }
+          if (t === '女') { log('性别判断：女（TextViews）'); return false }
+        } catch (e2) { /* ignore */ }
+      }
+    } catch (e) { /* ignore */ }
+
+    // 方法4：检查弹窗中的信息区域
+    // 有些版本性别显示在用户资料区域，可能是一个小标签
+    try {
+      if (textContains('岁').visibleToUser().exists()) {
+        // 有年龄但没有性别 → 可能性别不显示
+        log('性别判断：未显示（有年龄无性别）')
+        return null
+      }
+    } catch (e) { /* ignore */ }
+
+    log('性别判断：未显示')
+    return null
+  }
+
+  /**
+   * 在弹窗中点击"关注"按钮
+   *
+   * @returns {boolean} 是否成功
+   */
+  function clickFollowInPopup() {
+    // 策略1：desc("关注")
+    try {
+      if (desc('关注').visibleToUser().exists()) {
+        const btn = desc('关注').findOnce(1000)
+        if (btn) {
+          anti.randomTap(btn, config.tapOffsetMin(), config.tapOffsetMax())
+          log('点击关注成功（desc）')
+          sleep(500)
+          return true
+        }
+      }
+    } catch (e) { log('desc关注失败: ' + e) }
+
+    // 策略2：text("关注")
+    try {
+      if (text('关注').visibleToUser().exists()) {
+        const btn = text('关注').findOnce(1000)
+        if (btn) {
+          // 优先点可点击的父容器
+          try {
+            const parent = btn.parent()
+            if (parent && parent.clickable()) {
+              anti.randomTap(parent, config.tapOffsetMin(), config.tapOffsetMax())
+            } else {
+              anti.randomTap(btn, config.tapOffsetMin(), config.tapOffsetMax())
+            }
+          } catch (e) {
+            anti.randomTap(btn, config.tapOffsetMin(), config.tapOffsetMax())
+          }
+          log('点击关注成功（text）')
+          sleep(500)
+          return true
+        }
+      }
+    } catch (e) { log('text关注失败: ' + e) }
+
+    // 策略3：className("android.widget.Button") + desc("关注")
+    try {
+      const btn = className('android.widget.Button').desc('关注').findOnce(500)
+      if (btn && btn.visibleToUser()) {
+        anti.randomTap(btn, config.tapOffsetMin(), config.tapOffsetMax())
+        log('点击关注成功（className+desc）')
+        sleep(500)
+        return true
+      }
+    } catch (e) { /* ignore */ }
+
+    return false
+  }
+
+  /**
+   * 关闭个人资料弹窗
+   *
+   * 弹窗通常点击背景区域或按返回键关闭
+   */
+  function closeProfilePopup() {
+    if (!isProfilePopupVisible()) {
+      log('弹窗已关闭，无需操作')
+      return
+    }
+
+    // 策略1：点击弹窗空白区域（弹窗背景通常是半透明的，外圈可点击）
+    try {
+      // 点击屏幕左上角（弹窗外部区域）
+      press(device.width * 0.05, device.height * 0.1, 50)
+      sleep(500)
+      if (!isProfilePopupVisible()) {
+        log('关闭弹窗成功（点击外部）')
+        return
+      }
+    } catch (e) { /* ignore */ }
+
+    // 策略2：按返回键
+    try {
+      back()
+      sleep(500)
+      if (!isProfilePopupVisible()) {
+        log('关闭弹窗成功（返回键）')
+        return
+      }
+    } catch (e) { /* ignore */ }
+
+    // 策略3：再按一次返回
+    try {
+      back()
+      sleep(300)
+    } catch (e) { /* ignore */ }
+  }
+
+  // ============================================================
+  // 性别筛选（列表级 — 备选方案）
+  // ============================================================
+
+  /**
+   * 尝试在观众列表中使用筛选功能
+   *
+   * 部分抖音版本的观众列表顶部有"全部/男/女"Tab，
+   * 如果有就直接选"男"，后续就不用逐个判断性别了。
+   */
+  function filterMaleUsers() {
+    toastLog('尝试列表级性别筛选...')
+
+    // 策略：找"全部/男/女"Tab
+    try {
+      // 看点"男"是否可见
+      if (text('男').visibleToUser().exists()) {
+        const maleTab = text('男').findOnce(500)
+        if (maleTab) {
+          anti.randomTap(maleTab)
+          sleep(1500)
+          toastLog('✅ 列表筛选：只看男性')
+          return
+        }
+      }
+      // "男"不可见，看看有没有"全部"，点了展开找"男"
+      if (text('全部').visibleToUser().exists()) {
+        const allTab = text('全部').findOnce(500)
+        if (allTab) {
+          anti.randomTap(allTab)
+          sleep(1000)
+          if (text('男').visibleToUser().exists()) {
+            anti.randomTap(text('男').findOnce(500))
+            sleep(1500)
+            toastLog('✅ 列表筛选：只看男性')
+            return
+          }
+        }
+      }
+    } catch (e) { log('筛选Tab失败: ' + e) }
+
+    // 没有筛选功能 → 后续靠点头像进弹窗逐个判断
+    toastLog('列表无筛选，将逐个点头像看性别')
   }
 
   // ============================================================
