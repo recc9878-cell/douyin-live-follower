@@ -1,16 +1,41 @@
 {
-    "name": "抖音脚本合集",
-    "versionName": "2.0.0",
-    "versionCode": 200,
-    "main": "ui.js",
-    "ignore": [
-        "build"
-    ],
-    "packageName": "com.nice.douyin.script.all",
-    "launchConfig": {
-        "stableMode": true,
-        "splashText": "抖音脚本合集",
-        "splashIcon": "./logo-text.png"
-    },
-    "icon": "./logo.png"
+  "name": "抖音脚本合集",
+  "versionName": "2.0.0",
+  "versionCode": 200,
+  "packageName": "com.nice.douyin.script.all",
+  "main": "ui.js",
+  "assets": [],
+  "launchConfig": {
+    "logsVisible": true,
+    "splashVisible": true,
+    "launcherVisible": true,
+    "runOnBoot": false,
+    "splashText": "抖音脚本合集"
+  },
+  "build": {
+    "id": "49F9ADAD-1",
+    "number": 1,
+    "time": 1781582116564
+  },
+  "icon": "./logo.png",
+  "abis": [],
+  "libs": [],
+  "permissions": [
+    "android.permission.WAKE_LOCK",
+    "android.permission.INTERNET",
+    "android.permission.READ_EXTERNAL_STORAGE",
+    "android.permission.WRITE_EXTERNAL_STORAGE",
+    "android.permission.MANAGE_EXTERNAL_STORAGE",
+    "android.permission.FOREGROUND_SERVICE",
+    "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION",
+    "android.permission.FOREGROUND_SERVICE_SPECIAL_USE",
+    "android.permission.RECEIVE_BOOT_COMPLETED",
+    "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+    "android.permission.SYSTEM_ALERT_WINDOW"
+  ],
+  "signatureScheme": "V1 + V2",
+  "useFeatures": [],
+  "ignore": [
+    "build"
+  ]
 }

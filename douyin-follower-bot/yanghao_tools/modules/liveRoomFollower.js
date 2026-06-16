@@ -70,7 +70,7 @@
   // 每日重置
   // ============================================================
   function checkDailyReset() {
-    const dayjs = require('../utils/dayjs.1.11.6.min')
+    const dayjs = require('dayjs')
     const today = dayjs(new Date().getTime()).format('YYYY-MM-DD')
     const lastRun = dayjs(config.lastRunTime()).format('YYYY-MM-DD')
     if (today !== lastRun) {
