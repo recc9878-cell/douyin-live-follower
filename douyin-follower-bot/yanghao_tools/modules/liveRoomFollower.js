@@ -133,6 +133,11 @@
       return
     }
 
+    // 2.5 筛选男性用户（如果列表有筛选功能）
+    if (config.followMaleOnly()) {
+      filterMaleUsers()
+    }
+
     // 3. 处理观众列表 → 关注男性用户
     const followed = processViewerList()
 
@@ -286,6 +291,103 @@
     }
 
     return followed
+  }
+
+  // ============================================================
+  // 性别筛选（列表级）
+  // ============================================================
+
+  /**
+   * 在观众列表中找到并点击"筛选"按钮，选择男性
+   *
+   * 抖音观众列表顶部通常有"全部"、"男"、"女"等筛选标签，
+   * 或者有"筛选"按钮。如果有，直接选"男"让列表只显示男性用户。
+   * 如果没有筛选功能，fallback 到 per-user 判断。
+   */
+  function filterMaleUsers() {
+    toastLog('尝试筛选男性用户...')
+
+    // 策略1：点击"全部"标签区域 → 展开筛选选项 → 选"男"
+    // 观众列表顶部通常有"全部/男/女"三个 tab
+    try {
+      // 先看看有没有"全部"标签（有说明是 tab 筛选模式）
+      if (text('全部').visibleToUser().exists()) {
+        log('发现筛选标签，尝试选择"男"')
+        const maleTab = text('男').findOnce(1000)
+        if (maleTab && maleTab.visibleToUser()) {
+          anti.randomTap(maleTab)
+          sleep(1500)
+          toastLog('已筛选：只看男性')
+          return
+        }
+        // "男"不可见 → 可能被折叠了，先点"全部"展开
+        const allTab = text('全部').findOnce(1000)
+        if (allTab && allTab.visibleToUser()) {
+          anti.randomTap(allTab)
+          sleep(1000)
+          // 展开后再找"男"
+          const maleTab2 = text('男').findOnce(1000)
+          if (maleTab2 && maleTab2.visibleToUser()) {
+            anti.randomTap(maleTab2)
+            sleep(1500)
+            toastLog('已筛选：只看男性')
+            return
+          }
+        }
+      }
+    } catch (e) { log('筛选标签模式失败: ' + e) }
+
+    // 策略2：找"筛选"或"排序"按钮
+    try {
+      const filterKeywords = ['筛选', '排序', '全部']
+      for (const kw of filterKeywords) {
+        if (text(kw).visibleToUser().exists()) {
+          const filterBtn = text(kw).findOnce(1000)
+          if (filterBtn) {
+            anti.randomTap(filterBtn)
+            sleep(1500)
+
+            // 在弹出的面板中选"男"
+            const maleOpt = text('男').findOnce(1500)
+            if (maleOpt && maleOpt.visibleToUser()) {
+              anti.randomTap(maleOpt)
+              sleep(500)
+
+              // 点确定/完成
+              if (text('确定').visibleToUser().exists()) {
+                clickContent('确定', 'text')
+              } else if (desc('完成').visibleToUser().exists()) {
+                clickContent('完成', 'desc')
+              }
+
+              sleep(1500)
+              toastLog('已筛选：只看男性')
+              return
+            }
+          }
+        }
+      }
+    } catch (e) { log('筛选按钮模式失败: ' + e) }
+
+    // 策略3：找 desc 中的筛选相关按钮
+    try {
+      if (desc('筛选').visibleToUser().exists()) {
+        clickContent('筛选', 'desc')
+        sleep(1500)
+        const maleOpt = text('男').findOnce(1500)
+        if (maleOpt && maleOpt.visibleToUser()) {
+          anti.randomTap(maleOpt)
+          sleep(500)
+          if (text('确定').exists()) clickContent('确定', 'text')
+          sleep(1500)
+          toastLog('已筛选：只看男性')
+          return
+        }
+      }
+    } catch (e) { log('desc筛选模式失败: ' + e) }
+
+    // 都没有筛选功能 → 后续 processViewerList 中会逐个判断性别
+    toastLog('列表无筛选功能，将在关注时逐个识别性别')
   }
 
   // ============================================================
